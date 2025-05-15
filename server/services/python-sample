@@ -1,0 +1,331 @@
+from flask import Flask, render_template, request, redirect, url_for, send_file, jsonify, flash
+import requests
+from datetime import datetime, timezone
+import time
+import csv
+import io
+import os
+from models import db, WalletReport, WalletThreatScore, User
+from flask_login import LoginManager, login_user, logout_user, login_required, current_user
+
+app = Flask(__name__)
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///blockline.db'
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.secret_key = os.urandom(24)  # Change this to a secure secret key in production
+
+# Initialize Flask-Login
+login_manager = LoginManager()
+login_manager.init_app(app)
+login_manager.login_view = 'login'
+
+# Initialize database
+db.init_app(app)
+
+# Create database tables if they don't exist
+with app.app_context():
+    db.create_all()  # This will only create tables if they don't exist
+
+@login_manager.user_loader
+def load_user(user_id):
+    return User.query.get(int(user_id))
+
+# --- Authentication Routes ---
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if current_user.is_authenticated:
+        return redirect(url_for('index'))
+    
+    if request.method == 'POST':
+        username = request.form.get('username')
+        password = request.form.get('password')
+        user = User.query.filter_by(username=username).first()
+        
+        if user and user.check_password(password):
+            login_user(user)
+            next_page = request.args.get('next')
+            if next_page:
+                return redirect(next_page)
+            return redirect(url_for('index'))
+        else:
+            flash('Invalid username or password')
+    
+    return render_template('login.html')
+
+@app.route('/register', methods=['GET', 'POST'])
+def register():
+    if current_user.is_authenticated:
+        return redirect(url_for('index'))
+    
+    if request.method == 'POST':
+        username = request.form.get('username')
+        password = request.form.get('password')
+        
+        if User.query.filter_by(username=username).first():
+            flash('Username already exists')
+            return redirect(url_for('register'))
+        
+        user = User(username=username)
+        user.set_password(password)
+        db.session.add(user)
+        db.session.commit()
+        
+        flash('Registration successful! Please login.')
+        return redirect(url_for('login'))
+    
+    return render_template('register.html')
+
+@app.route('/logout')
+@login_required
+def logout():
+    logout_user()
+    return redirect(url_for('index'))
+
+API_BASE_URL = "https://blockchain.info"
+HEADERS = {'Accept': 'application/json'}
+TRANSACTIONS_PER_PAGE = 50
+RATE_LIMIT_DELAY = 1
+
+def fetch_btc_price():
+    try:
+        response = requests.get("https://blockchain.info/ticker", headers=HEADERS, timeout=20)
+        response.raise_for_status()
+        data = response.json()
+        return data['USD']['last']
+    except requests.RequestException as e:
+        print(f"Error fetching BTC price: {e}")
+        return None
+
+def fetch_transactions(address):
+    transactions = []
+    offset = 0
+    while True:
+        request_url = f"{API_BASE_URL}/rawaddr/{address}?limit={TRANSACTIONS_PER_PAGE}&offset={offset}"
+        try:
+            response = requests.get(request_url, headers=HEADERS, timeout=20)
+            response.raise_for_status()
+            data = response.json()
+
+            if 'txs' not in data or not data['txs']:
+                break
+
+            transactions.extend(data['txs'])
+
+            if len(data['txs']) < TRANSACTIONS_PER_PAGE:
+                break
+
+            offset += len(data['txs'])
+            time.sleep(RATE_LIMIT_DELAY)
+
+        except requests.RequestException as e:
+            print(f"Error fetching transactions: {e}")
+            break
+    return transactions
+
+def fetch_balance(address):
+    try:
+        response = requests.get(f"{API_BASE_URL}/rawaddr/{address}", headers=HEADERS, timeout=20)
+        response.raise_for_status()
+        data = response.json()
+        return data.get('final_balance', 0)
+    except requests.RequestException as e:
+        print(f"Error fetching balance: {e}")
+        return None
+
+def process_transactions(transactions, btc_price):
+    processed = []
+    total_sent = 0
+    for tx in transactions:
+        try:
+            timestamp = tx.get("time")
+            if timestamp is None:
+                continue
+            dt = datetime.fromtimestamp(timestamp, timezone.utc)
+            sender = None
+            for inp in tx.get("inputs", []):
+                sender = inp.get("prev_out", {}).get("addr")
+                if sender:
+                    break
+
+            for output in tx.get("out", []):
+                dest = output.get("addr")
+                value = output.get("value", 0)
+                if dest:
+                    usd = value / 1e8 * btc_price
+                    processed.append((dt, value / 1e8, usd, sender or "Unknown", dest))
+                    total_sent += value
+        except Exception as e:
+            print(f"Error processing transaction: {e}")
+    return processed, total_sent
+
+def get_wallet_threat_score(address):
+    wallet = WalletThreatScore.query.filter_by(wallet_address=address).first()
+    return wallet.threat_score if wallet else 0
+
+def update_wallet_threat_score(address):
+    wallet = WalletThreatScore.query.filter_by(wallet_address=address).first()
+    if not wallet:
+        wallet = WalletThreatScore(wallet_address=address, threat_score=0)
+        db.session.add(wallet)
+    
+    wallet.threat_score += 1
+    db.session.commit()
+    return wallet.threat_score
+
+@app.route('/report_wallet', methods=['POST'])
+@login_required
+def report_wallet():
+    address = request.form.get('address')
+    reason = request.form.get('reason')
+    
+    if not address:
+        return jsonify({'error': 'Wallet address is required'}), 400
+    
+    try:
+        # Check if user has already reported this wallet
+        existing_report = WalletReport.query.filter_by(
+            wallet_address=address,
+            user_id=current_user.id
+        ).first()
+        
+        if existing_report:
+            return jsonify({
+                'error': 'You have already reported this wallet address.',
+                'already_reported': True
+            }), 400
+        
+        # Create new report
+        report = WalletReport(
+            wallet_address=address,
+            reporter_ip=request.remote_addr,
+            report_reason=reason,
+            user_id=current_user.id
+        )
+        db.session.add(report)
+        
+        # Update threat score
+        new_score = update_wallet_threat_score(address)
+        
+        db.session.commit()
+        return jsonify({
+            'success': True,
+            'message': 'Wallet reported successfully',
+            'new_threat_score': new_score
+        })
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/', methods=['GET', 'POST'])
+def index():
+    if request.method == 'POST':
+        address = request.form.get('address')
+        btc_price = fetch_btc_price()
+
+        if btc_price:
+            transactions = fetch_transactions(address)
+            if transactions:
+                processed, total_sent = process_transactions(transactions, btc_price)
+                threat_score = get_wallet_threat_score(address)
+                balance_satoshi = fetch_balance(address)
+                return render_template('results.html', 
+                                    processed=processed, 
+                                    total_sent=total_sent,
+                                    address=address,
+                                    threat_score=threat_score,
+                                    btc_price=btc_price,
+                                    balance_satoshi=balance_satoshi)
+            else:
+                return render_template('index.html', error="No transactions found.")
+        else:
+            return render_template('index.html', error="Could not retrieve BTC price.")
+
+    return render_template('index.html')
+
+@app.route('/results')
+def results():
+    address = request.args.get('address')
+    if not address:
+        return redirect(url_for('index'))
+
+    btc_price = fetch_btc_price()
+    transactions = fetch_transactions(address)
+    balance_satoshi = fetch_balance(address)
+
+    if transactions and btc_price:
+        processed, total_sent = process_transactions(transactions, btc_price)
+        threat_score = get_wallet_threat_score(address)
+        return render_template('results.html',
+            processed=processed,
+            total_sent=total_sent,
+            btc_price=btc_price,
+            balance_satoshi=balance_satoshi,
+            address=address,
+            threat_score=threat_score
+        )
+    else:
+        return render_template('results.html', 
+                             processed=[], 
+                             address=address,
+                             btc_price=btc_price or 0,
+                             balance_satoshi=balance_satoshi or 0,
+                             threat_score=0)
+
+@app.route('/export')
+def export_csv():
+    address = request.args.get('address')
+    btc_price = fetch_btc_price()
+    transactions = fetch_transactions(address)
+    processed, _ = process_transactions(transactions, btc_price)
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["Date", "Amount (BTC)", "Amount (USD)", "Sender", "Recipient"])
+    for tx in processed:
+        writer.writerow([
+            tx[0].isoformat(), "%.8f" % tx[1], "%.2f" % tx[2], tx[3], tx[4]
+        ])
+
+    output.seek(0)
+    return send_file(io.BytesIO(output.read().encode('utf-8')),
+                     mimetype='text/csv',
+                     as_attachment=True,
+                     download_name=f'{address}_transactions.csv')
+
+#more features
+@app.route('/reputation')
+def reputation():
+    address = request.args.get('address')
+    if not address:
+        return redirect(url_for('index'))
+
+    threat_score = get_wallet_threat_score(address)
+    reports = WalletReport.query.filter_by(wallet_address=address).order_by(WalletReport.created_at.desc()).all()
+    
+    return render_template('reputation.html',
+                         address=address,
+                         threat_score=threat_score,
+                         reports=reports,
+                         is_authenticated=current_user.is_authenticated)
+
+@app.route('/Darkweb-Intel')
+def timeline():
+    address = request.args.get('address')
+    return f"<h3>Timeline feature coming soon for {address}</h3>"
+
+@app.route('/Public-Intelligence')
+def flag():
+    address = request.args.get('address')
+    return f"<h3>Flag wallet feature coming soon for {address}</h3>"
+
+@app.route('/index.html')
+def index_html():
+    return render_template('index.html')
+
+@app.route('/results.html')
+def results_html():
+    return render_template('results.html')
+
+if __name__ == '__main__':
+    with app.app_context():
+        db.create_all()
+    app.run(debug=True)

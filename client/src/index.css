@@ -1,0 +1,98 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: 0 0% 100%;
+  --foreground: 20 14.3% 4.1%;
+  --muted: 60 4.8% 95.9%;
+  --muted-foreground: 25 5.3% 44.7%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 20 14.3% 4.1%;
+  --card: 0 0% 100%;
+  --card-foreground: 20 14.3% 4.1%;
+  --border: 20 5.9% 90%;
+  --input: 20 5.9% 90%;
+  --primary: 207 90% 54%;
+  --primary-foreground: 211 100% 99%;
+  --secondary: 26 100% 54%;
+  --secondary-foreground: 25 97% 98%;
+  --accent: 60 4.8% 95.9%;
+  --accent-foreground: 24 9.8% 10%;
+  --destructive: 0 84.2% 60.2%;
+  --destructive-foreground: 60 9.1% 97.8%;
+  --ring: 20 14.3% 4.1%;
+  --radius: 0.5rem;
+
+  /* Custom colors */
+  --positive: 142 100% 38%;
+  --warning: 45 100% 51%;
+  --negative: 4 90% 58%;
+  --neutral-100: 228 40% 98%;
+  --neutral-200: 226 25% 94%;
+  --neutral-300: 225 19% 85%;
+  --neutral-400: 225 14% 68%;
+  --neutral-500: 225 14% 52%;
+  --neutral-600: 227 19% 38%;
+  --neutral-700: 228 18% 27%;
+  --neutral-800: 228 18% 16%;
+  --neutral-900: 228 20% 11%;
+}
+
+.dark {
+  --background: 228 20% 11%;
+  --foreground: 0 0% 98%;
+  --muted: 240 3.7% 15.9%;
+  --muted-foreground: 240 5% 64.9%;
+  --popover: 228 18% 16%;
+  --popover-foreground: 0 0% 98%;
+  --card: 228 18% 16%;
+  --card-foreground: 0 0% 98%;
+  --border: 228 18% 27%;
+  --input: 228 18% 27%;
+  --primary: 207 90% 54%;
+  --primary-foreground: 211 100% 99%;
+  --secondary: 26 100% 54%;
+  --secondary-foreground: 25 97% 98%;
+  --accent: 228 18% 27%;
+  --accent-foreground: 0 0% 98%;
+  --destructive: 0 62.8% 30.6%;
+  --destructive-foreground: 0 0% 98%;
+  --ring: 240 4.9% 83.9%;
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  
+  body {
+    @apply font-sans antialiased bg-[#F8F9FD] dark:bg-[#171821] text-neutral-700 dark:text-neutral-200 transition-colors duration-200;
+  }
+  
+  .custom-shadow {
+    @apply shadow-lg;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+  }
+  
+  .dark .custom-shadow {
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+  }
+  
+  .wallet-card {
+    @apply transition-all duration-200;
+  }
+  
+  .wallet-card:hover {
+    @apply -translate-y-1;
+    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.12);
+  }
+  
+  .dark .wallet-card:hover {
+    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.25);
+  }
+  
+  .truncate-address {
+    @apply inline-block whitespace-nowrap overflow-hidden text-ellipsis max-w-[150px] md:max-w-[220px];
+  }
+}

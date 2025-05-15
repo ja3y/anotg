@@ -1,0 +1,56 @@
+Fix Recommendations
+1. Remove the Hard 2-Second Delay
+
+You don’t need both the 30-per-minute limit and a 2-second gap. Instead:
+
+Remove or relax MIN_REQUEST_INTERVAL.
+Rely on the 30 requests per minute limiter alone, possibly using a token bucket or leaky bucket algorithm.
+// REMOVE this block, or guard it with a condition
+if (timeSinceLastRequest < this.MIN_REQUEST_INTERVAL) {
+  await new Promise(resolve => setTimeout(resolve, this.MIN_REQUEST_INTERVAL - timeSinceLastRequest));
+}
+2. Use a Token Bucket/Queue System Instead
+
+Use a more efficient throttling strategy like a token bucket where you "refill" 30 tokens every minute, and each request consumes one.
+
+Consider using something like this with a queue:
+
+// Pseudocode using a simple token bucket
+setInterval(() => {
+  tokens = Math.min(30, tokens + 1); // Refill 1 token every 2 seconds
+}, 2000);
+
+function tryRequest() {
+  if (tokens > 0) {
+    tokens--;
+    makeRequest();
+  } else {
+    setTimeout(tryRequest, 500); // Retry shortly
+  }
+}
+Or use a mature library like bottleneck:
+
+import Bottleneck from "bottleneck";
+
+const limiter = new Bottleneck({
+  reservoir: 30,  // initial quota
+  reservoirRefreshAmount: 30,
+  reservoirRefreshInterval: 60 * 1000, // refresh every minute
+  maxConcurrent: 1,
+});
+
+const throttledRequest = limiter.wrap(yourApiCallFunction);
+3. Improve Retry Strategy with Exponential Backoff
+
+Instead of retrying after the full retry-after each time, do:
+
+const waitTime = Math.min((2 ** retryCount) * 1000, this.MAX_WAIT_TIME);
+This exponentially increases delay: 2s → 4s → 8s...
+
+4. Rate-Limit Based on Header If Available
+
+If blockchain.info gives you headers like Retry-After, X-RateLimit-Remaining, use those dynamically instead of hardcoding.
+
+Bonus Enhancements
+Add queueing or concurrency management per wallet address, so frequent queries don’t block less-frequent ones.
+Make cache expiration adaptive depending on how frequently data for a given wallet changes.
